@@ -1,5 +1,6 @@
-(** Backends, which do the trace recording, present this unified interface in order to be
-    exposed as commands which can generate traces. *)
+(** Unified interface in order to be for the trace,exposed as commands which can generate traces. *)
+
+(* Part of ARM mod - xavio2495*)
 
 open! Core
 open! Async

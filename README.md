@@ -1,3 +1,17 @@
+<div align="center">
+
+# magic-trace-arm
+### Experimental untested support for ARM architecture
+</div>
+
+### WARNING:
+
+1. The contribution made in this Fork of magic-trace has not yet been tested on actual ARM hardware, where magic-trace runs on target. 
+2. Plans for the tests are delayed due to lack of ARM based hardware around myself
+3. Refer to [README-arm.md](./README-arm.md) for details about the contribution and developement status of this fork.
+
+---
+
 <h1 align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg?sanitize=true">
