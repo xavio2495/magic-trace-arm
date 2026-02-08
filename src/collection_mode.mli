@@ -35,6 +35,9 @@ end
 type t =
   | Intel_processor_trace of { extra_events : Event.t list }
   | Stacktrace_sampling of { extra_events : Event.t list }
+  | Arm_coresight of { preferred_sink : string option }
+  (** ARM CoreSight ETM tracing via [perf cs_etm].  Available on CPUs
+            that expose CoreSight hardware through the Linux kernel. *)
 
 val extra_events : t -> Event.t list
 val param : t Command.Param.t

@@ -230,8 +230,8 @@ module Recording = struct
   ;;
 
   let perf_intel_pt_config_of_timer_resolution
-    ~capabilities
-    (timer_resolution : Timer_resolution.t)
+        ~capabilities
+        (timer_resolution : Timer_resolution.t)
     =
     let timer_resolution =
       match
@@ -305,10 +305,10 @@ module Recording = struct
   ;;
 
   let perf_args_of_collection_mode
-    ~capabilities
-    ~timer_resolution
-    ~trace_scope
-    (collection_mode : Collection_mode.t)
+        ~capabilities
+        ~timer_resolution
+        ~trace_scope
+        (collection_mode : Collection_mode.t)
     =
     let selector = perf_selector_of_trace_scope trace_scope in
     let%map.Or_error primary_event =
@@ -323,6 +323,19 @@ module Recording = struct
           perf_cycles_config_of_timer_resolution timer_resolution
         in
         [%string "cycles/%{cycles_config}/%{selector}"]
+      | Arm_coresight { preferred_sink } ->
+        (* Convert from magic_trace_lib's Trace_scope to Arm_endpoint's local type. *)
+        let arm_scope : Arm_endpoint.Trace_scope.t =
+          match trace_scope with
+          | Trace_scope.Userspace -> Arm_endpoint.Trace_scope.Userspace
+          | Trace_scope.Kernel -> Arm_endpoint.Trace_scope.Kernel
+          | Trace_scope.Userspace_and_kernel ->
+            Arm_endpoint.Trace_scope.Userspace_and_kernel
+        in
+        let%map.Or_error cfg =
+          Arm_endpoint.auto_config ~trace_scope:arm_scope ?preferred_sink ()
+        in
+        Arm_endpoint.perf_event_string ~sink_name:cfg.sink_name ~trace_scope:arm_scope
     in
     let extra_events =
       perf_config_of_extra_events ~selector (Collection_mode.extra_events collection_mode)
@@ -343,16 +356,16 @@ module Recording = struct
   ;;
 
   let attach_and_record
-    { Record_opts.multi_thread; full_execution; snapshot_size; callgraph_mode }
-    ~debug_print_perf_commands
-    ~(subcommand : Subcommand.t)
-    ~(when_to_snapshot : When_to_snapshot.t)
-    ~(trace_scope : Trace_scope.t)
-    ~multi_snapshot
-    ~(timer_resolution : Timer_resolution.t)
-    ~record_dir
-    ~(collection_mode : Collection_mode.t)
-    pids
+        { Record_opts.multi_thread; full_execution; snapshot_size; callgraph_mode }
+        ~debug_print_perf_commands
+        ~(subcommand : Subcommand.t)
+        ~(when_to_snapshot : When_to_snapshot.t)
+        ~(trace_scope : Trace_scope.t)
+        ~multi_snapshot
+        ~(timer_resolution : Timer_resolution.t)
+        ~record_dir
+        ~(collection_mode : Collection_mode.t)
+        pids
     =
     let%bind () = init_record_dir record_dir in
     let%bind capabilities = Perf_capabilities.detect_exn () in
@@ -409,6 +422,15 @@ module Recording = struct
            Deferred.Or_error.error_string
              "[-callgraph-mode] is only configurable when running magic-trace with \
               sampling.")
+      | Arm_coresight _ ->
+        (* CoreSight ETM provides full instruction-level trace; callgraph
+           reconstruction is done by the OpenCSD decoder, not by perf's
+           callgraph feature. *)
+        (match callgraph_mode with
+         | None -> return None
+         | Some _ ->
+           Deferred.Or_error.error_string
+             "[-callgraph-mode] is not applicable for ARM CoreSight tracing.")
       | Stacktrace_sampling _ ->
         (match
            ( callgraph_mode
@@ -454,6 +476,9 @@ module Recording = struct
           , Perf_capabilities.(do_intersect capabilities kcore) )
         with
         | Intel_processor_trace _, Userspace, _ | Stacktrace_sampling _, _, _ -> []
+        (* ARM CoreSight does not use kcore — the ETM captures the full instruction
+           stream including kernel text without needing kcore. *)
+        | Arm_coresight _, _, _ -> []
         | Intel_processor_trace _, (Kernel | Userspace_and_kernel), true -> [ "--kcore" ]
         | Intel_processor_trace _, (Kernel | Userspace_and_kernel), false ->
           (* Strictly speaking, we could recreate tools/perf/perf-with-kcore.sh
@@ -477,7 +502,13 @@ module Recording = struct
         Core.eprintf
           "Warning: -snapshot-size is ignored when not running with Intel PT.\n";
         []
-      | None, Intel_processor_trace _ | None, Stacktrace_sampling _ -> []
+      | Some _, Arm_coresight _ ->
+        Core.eprintf
+          "Warning: -snapshot-size is ignored when using ARM CoreSight tracing.\n";
+        []
+      | None, Intel_processor_trace _
+      | None, Stacktrace_sampling _
+      | None, Arm_coresight _ -> []
     in
     let snapshot_when : Snapshot_when.t =
       if full_execution
@@ -493,11 +524,14 @@ module Recording = struct
       | Stacktrace_sampling _ ->
         (* We don't take perf AUX snapshots in stacktrace sampling mode *)
         Control.create ~capabilities ~snapshot_when:Never
+      | Arm_coresight _ ->
+        (* ARM CoreSight uses the same AUX snapshot mechanism as Intel PT *)
+        Control.create ~capabilities ~snapshot_when
     in
     let overwrite_opts =
       match collection_mode, full_execution with
       | Stacktrace_sampling _, false -> [ "--overwrite" ]
-      | Intel_processor_trace _, false | _, true -> []
+      | Intel_processor_trace _, false | Arm_coresight _, false | _, true -> []
     in
     let switch_opts =
       match multi_snapshot with
@@ -575,13 +609,13 @@ module Decode_opts = struct
 end
 
 let decode_events
-  ?perf_maps
-  ?(filter_same_symbol_jumps = true)
-  ~debug_print_perf_commands
-  ~(recording_data : Recording.Data.t option)
-  ~record_dir
-  ~(collection_mode : Collection_mode.t)
-  ()
+      ?perf_maps
+      ?(filter_same_symbol_jumps = true)
+      ~debug_print_perf_commands
+      ~(recording_data : Recording.Data.t option)
+      ~record_dir
+      ~(collection_mode : Collection_mode.t)
+      ()
   =
   let%bind capabilities = Perf_capabilities.detect_exn () in
   let%bind.Deferred.Or_error dlfilter_opts =
@@ -594,8 +628,12 @@ let decode_events
       let filename = record_dir ^/ "perf_dlfilter.so" in
       let%map.Deferred.Or_error () = write_perf_dlfilter filename in
       [ "--dlfilter"; filename ]
-    | false, _, _ | true, Stacktrace_sampling _, _ | true, Intel_processor_trace _, true
-      -> Deferred.Or_error.return []
+    | false, _, _
+    | true, Stacktrace_sampling _, _
+    | true, Intel_processor_trace _, true
+    (* ARM CoreSight synthetic events don't need the same-symbol-jump dlfilter
+       because indirect branches are fully resolved by OpenCSD. *)
+    | true, Arm_coresight _, _ -> Deferred.Or_error.return []
   in
   let%bind files =
     Sys.readdir record_dir
@@ -608,12 +646,22 @@ let decode_events
         match collection_mode with
         | Intel_processor_trace _ -> [ "--itrace=bep" ]
         | Stacktrace_sampling _ -> []
+        | Arm_coresight _ ->
+          (* b = taken branches, e = errors, p = ptwrite (unused but harmless).  The
+             OpenCSD decoder handles full instruction decode; we ask perf to emit
+             branch-level synthetic events so the existing magic-trace event pipeline
+             can consume them without modification. *)
+          [ "--itrace=be" ]
       in
       let fields_opts =
         match collection_mode with
         | Intel_processor_trace _ ->
           [ "-F"; "pid,tid,time,flags,ip,addr,sym,symoff,synth,dso,event,period" ]
         | Stacktrace_sampling _ -> [ "-F"; "pid,tid,time,ip,sym,symoff,dso,event,period" ]
+        | Arm_coresight _ ->
+          (* Same fields as Intel PT — the synthetic events produced by cs_etm
+             decode have the same structure. *)
+          [ "-F"; "pid,tid,time,flags,ip,addr,sym,symoff,synth,dso,event,period" ]
       in
       let args =
         List.concat

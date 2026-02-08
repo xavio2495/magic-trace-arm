@@ -51,22 +51,36 @@ end
 type t =
   | Intel_processor_trace of { extra_events : Event.t list }
   | Stacktrace_sampling of { extra_events : Event.t list }
+  | Arm_coresight of { preferred_sink : string option }
 
 let extra_events = function
   | Intel_processor_trace { extra_events } | Stacktrace_sampling { extra_events } ->
     extra_events
+  | Arm_coresight _ -> []
 ;;
 
-let select_collection_mode ~extra_events ~use_sampling =
-  match use_sampling with
-  | true -> Stacktrace_sampling { extra_events }
-  | false ->
+let select_collection_mode ~extra_events ~use_sampling ~use_arm =
+  match use_arm, use_sampling with
+  | true, _ ->
+    (* ARM CoreSight requested explicitly; sink will be auto-detected later. *)
+    Arm_coresight { preferred_sink = None }
+  | false, true -> Stacktrace_sampling { extra_events }
+  | false, false ->
+    (* Check for Intel PT first, then ARM CoreSight, then fall back to sampling. *)
     (match Core_unix.access "/sys/bus/event_source/devices/intel_pt" [ `Exists ] with
      | Ok () -> Intel_processor_trace { extra_events }
      | Error _ ->
-       Core.eprintf
-         "Intel PT support not found. magic-trace will continue and use sampling instead.\n";
-       Stacktrace_sampling { extra_events })
+       (match Core_unix.access "/sys/bus/coresight/devices" [ `Exists ] with
+        | Ok () ->
+          Core.eprintf
+            "Intel PT not found; ARM CoreSight detected. magic-trace will use ARM \
+             CoreSight tracing.\n";
+          Arm_coresight { preferred_sink = None }
+        | Error _ ->
+          Core.eprintf
+            "Intel PT support not found. magic-trace will continue and use sampling \
+             instead.\n";
+          Stacktrace_sampling { extra_events }))
 ;;
 
 let param =
@@ -88,6 +102,14 @@ let param =
       ~doc:
         "Use stacktrace sampling instead of Intel PT. If Intel PT is not available, \
          magic-trace will default to this. For more info: https://magic-trace.org/w/b"
+  and use_arm =
+    flag
+      "-arm"
+      no_arg
+      ~doc:
+        "Use ARM CoreSight ETM tracing (cs_etm) instead of Intel PT. Requires an ARM CPU \
+         with CoreSight support and a perf built with CORESIGHT=1. If CoreSight is \
+         detected automatically, this flag is not required."
   in
-  select_collection_mode ~extra_events ~use_sampling
+  select_collection_mode ~extra_events ~use_sampling ~use_arm
 ;;
