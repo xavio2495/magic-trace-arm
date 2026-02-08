@@ -1,0 +1,40 @@
+(library
+ (name magic_trace_arm)
+ (wrapped false)
+ (modules
+  Platform
+  Coresight_detect
+  Arm_endpoint
+  Opencsd_decoder
+  Opencsd_setup)
+ (foreign_stubs
+  (language c)
+  (names opencsd_binding opencsd_stubs)
+  (flags
+   (:include opencsd_cflags.sexp)))
+ (c_library_flags
+  (:include opencsd_libs.sexp))
+ (libraries core))
+
+; ---------------------------------------------------------------------------
+; Build-time discovery of OpenCSD via pkg-config.
+; Generates flag sexp files so the library compiles on systems with or without
+; OpenCSD installed.  Without OpenCSD the C stubs will link but raise
+; [Failure] at runtime when called.
+; ---------------------------------------------------------------------------
+
+(rule
+ (targets opencsd_cflags.sexp)
+ (action
+  (with-stdout-to
+   opencsd_cflags.sexp
+   (bash
+    "pkg-config --cflags opencsd 2>/dev/null | tr ' ' '\\n' | grep -v '^$' | sed 's/.*/(\"&\")/' | (printf '(' ; tr -d '\\n' ; printf ')\\n') || printf '()\\n'"))))
+
+(rule
+ (targets opencsd_libs.sexp)
+ (action
+  (with-stdout-to
+   opencsd_libs.sexp
+   (bash
+    "pkg-config --libs opencsd 2>/dev/null | tr ' ' '\\n' | grep -v '^$' | sed 's/.*/(\"&\")/' | (printf '(' ; tr -d '\\n' ; printf ')\\n') || printf '(\"-lopencsd_c_api\")\\n'"))))
